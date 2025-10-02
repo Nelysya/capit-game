@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Game Capit (Claw Machine)</title>
+  <style>
+    :root{
+      --bg:#0f172a;          /* slate-900 */
+      --panel:#111827;       /* gray-900 */
+      --accent:#22d3ee;      /* cyan-400 */
+      --accent2:#a78bfa;     /* violet-400 */
+      --win:#10b981;         /* emerald-500 */
+      --lose:#ef4444;        /* red-500 */
+      --text:#e5e7eb;        /* gray-200 */
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#0b1224,#0f172a 40%,#0b1224);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Roboto,Ubuntu,Inter,sans-serif}
+    .wrap{max-width:900px;margin:0 auto;padding:16px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    h1{font-size:clamp(18px,3vw,24px);margin:0;letter-spacing:.3px}
+    .hud{display:flex;gap:10px;flex-wrap:wrap}
+    .badge{background:#111827;border:1px solid #1f2937;border-radius:999px;padding:6px 12px;font-weight:600}
+    .btns{display:flex;gap:10px;flex-wrap:wrap}
+    button{appearance:none;border:0;border-radius:12px;padding:10px 14px;font-weight:700;letter-spacing:.3px;cursor:pointer;transition:.2s transform,.2s opacity}
+    button.primary{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#001018}
+    button.secondary{background:#1f2937;color:var(--text);border:1px solid #374151}
+    button:active{transform:scale(.98)}
+
+    .machine{position:relative;background:linear-gradient(180deg,#0d1326,#0a0f21);border:1px solid #1f2937;border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.35) inset, 0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+    .top-bar{position:absolute;inset:0 0 auto 0;height:70px;background:linear-gradient(180deg,#0b182e,#0a1226);border-bottom:1px solid #21314d;display:flex;align-items:center;justify-content:center;z-index:5}
+    .top-bar::after{content:"";position:absolute;inset:auto 10px 10px 10px;height:6px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);border-radius:999px}
+
+    canvas{display:block;width:100%;height:auto;aspect-ratio:16/9}
+
+    .note{opacity:.8;font-size:.9rem;margin-top:8px}
+
+    .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;border:1px solid #374151;color:var(--text);padding:10px 14px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.35);display:none}
+    .toast.show{display:block}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🎯 Game Capit Boneka — versi web ringan</h1>
+      <div class="hud">
+        <div class="badge" id="score">Skor: 0</div>
+        <div class="badge" id="tries">Percobaan: 5</div>
+        <div class="badge" id="status">Siap!</div>
+      </div>
+      <div class="btns">
+        <button class="primary" id="btnDrop">DROP (Spasi)</button>
+        <button class="secondary" id="btnReset">Reset</button>
+      </div>
+    </header>
+
+    <div class="machine">
+      <div class="top-bar"><strong>CAPIT ZONE</strong></div>
+      <canvas id="game" width="960" height="540" aria-label="Canvas Game Capit"></canvas>
+    </div>
+    <div class="note">Tip: Tekan <b>Spasi</b> atau tombol <b>DROP</b> saat capit berada di atas boneka. Sentuh layar juga bisa.</div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    // ======= UTIL =======
+    const lerp=(a,b,t)=>a+(b-a)*t;
+    const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+    const rand=(min,max)=>Math.random()*(max-min)+min;
+
+    // ======= GAME STATE =======
+    const canvas=document.getElementById('game');
+    const ctx=canvas.getContext('2d');
+    const W=canvas.width, H=canvas.height;
+
+    const state={
+      running:true,
+      mode:'idle',           // 'idle' | 'dropping' | 'lifting' | 'resetting'
+      score:0,
+      tries:5,
+      msg:'Siap!'
+    };
+
+    const ui={
+      score:document.getElementById('score'),
+      tries:document.getElementById('tries'),
+      status:document.getElementById('status'),
+      toast:document.getElementById('toast')
+    };
+
+    function setToast(text){
+      ui.toast.textContent=text; ui.toast.classList.add('show');
+      clearTimeout(setToast._t);
+      setToast._t=setTimeout(()=>ui.toast.classList.remove('show'),1600);
+    }
+
+    // ======= WORLD =======
+    const groundY=H-60;
+
+    const crane={ x:W*0.5, y:80, dir:1, speed:2.2, width:70, arm:18, rope:60, maxDrop:groundY-90 };
+
+    /** Toys are circles with slight glow **/
+    const toys=[];
+    const COLORS=['#f472b6','#60a5fa','#34d399','#fbbf24','#a78bfa','#22d3ee'];
+
+    function spawnToys(){
+      toys.length=0;
+      const cols=6, rows=2;
+      const padX=70, padY=40;
+      const cellW=(W-2*padX)/cols, cellH=70;
+      for(let r=0;r<rows;r++){
+        for(let c=0;c<cols;c++){
+          const cx=padX+cellW*(c+0.5)+rand(-8,8);
+          const cy=groundY-20 - r*cellH + rand(-6,6);
+          toys.push({x:cx,y:cy,r:20+rand(-3,3),color:COLORS[(r*cols+c)%COLORS.length],won:false});
+        }
+      }
+    }
+
+    spawnToys();
+
+    // ======= INPUT =======
+    function tryDrop(){
+      if(state.mode!=='idle' || state.tries<=0) return;
+      state.mode='dropping';
+      state.msg='Menurunkan...';
+      updateHUD();
+    }
+
+    document.getElementById('btnDrop').addEventListener('click',tryDrop);
+    document.getElementById('btnReset').addEventListener('click',()=>{
+      state.score=0; state.tries=5; state.mode='idle'; state.msg='Siap!';
+      crane.rope=60; crane.x=W*0.5; crane.dir=1; crane.speed=2.2;
+      spawnToys();
+      updateHUD(); setToast('Reset! Semangat ✨');
+    });
+
+    window.addEventListener('keydown',e=>{
+      if(e.code==='Space'){ e.preventDefault(); tryDrop(); }
+    });
+    // Touch anywhere on canvas to drop
+    canvas.addEventListener('pointerdown',tryDrop);
+
+    function updateHUD(){
+      ui.score.textContent='Skor: '+state.score;
+      ui.tries.textContent='Percobaan: '+state.tries;
+      ui.status.textContent=state.msg;
+    }
+
+    // ======= GAME LOOP =======
+    let grabbed=null; // index of toy captured
+
+    function drawBackground(){
+      // floor
+      ctx.fillStyle='#0b1326';
+      ctx.fillRect(0,0,W,H);
+      // soft vignette
+      const g=ctx.createRadialGradient(W/2,H*0.4,50,W/2,H*0.6,Math.max(W,H));
+      g.addColorStop(0,'rgba(79,70,229,.28)');
+      g.addColorStop(1,'rgba(0,0,0,.0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+      // Pit area
+      ctx.fillStyle='#0d1429';
+      ctx.fillRect(0,groundY,W,H-groundY);
+      ctx.strokeStyle='#1f2a47'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(0,groundY); ctx.lineTo(W,groundY); ctx.stroke();
+    }
+
+    function drawToys(){
+      for(const t of toys){
+        if(t.won) continue;
+        // shadow
+        ctx.fillStyle='rgba(0,0,0,.35)';
+        ctx.beginPath(); ctx.ellipse(t.x, groundY+8, t.r*0.9, t.r*0.45, 0, 0, Math.PI*2); ctx.fill();
+        // body
+        const glow=ctx.createRadialGradient(t.x-6,t.y-6,4,t.x,t.y,t.r+8);
+        glow.addColorStop(0,'#ffffff');
+        glow.addColorStop(0.15, t.color);
+        glow.addColorStop(1, 'rgba(255,255,255,.06)');
+        ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
+        // face
+        ctx.fillStyle='#0f172a';
+        ctx.beginPath(); ctx.arc(t.x-6,t.y-3,2.8,0,Math.PI*2); ctx.arc(t.x+6,t.y-3,2.8,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='#0f172a'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(t.x,t.y+4,6,0,Math.PI); ctx.stroke();
+      }
+    }
+
+    function drawCrane(){
+      // rail
+      ctx.strokeStyle='#21314d'; ctx.lineWidth=8; ctx.beginPath(); ctx.moveTo(40,60); ctx.lineTo(W-40,60); ctx.stroke();
+      // carriage
+      ctx.fillStyle='#1f2a47'; ctx.fillRect(crane.x-40,60,80,22);
+      // rope
+      ctx.strokeStyle='#94a3b8'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(crane.x, 82); ctx.lineTo(crane.x, 82+crane.rope); ctx.stroke();
+      // claw body
+      const cy=82+crane.rope;
+      ctx.fillStyle='#c7d2fe';
+      ctx.beginPath(); ctx.arc(crane.x, cy, 12, 0, Math.PI*2); ctx.fill();
+      // arms
+      ctx.strokeStyle='#c7d2fe'; ctx.lineWidth=5; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(crane.x, cy);
+      ctx.lineTo(crane.x-14, cy+22); ctx.moveTo(crane.x, cy); ctx.lineTo(crane.x+14, cy+22); ctx.stroke();
+    }
+
+    function update(){
+      // Move crane left-right when idle
+      if(state.mode==='idle'){
+        crane.x+=crane.speed*crane.dir;
+        if(crane.x<70){crane.x=70; crane.dir=1}
+        if(crane.x>W-70){crane.x=W-70; crane.dir=-1}
+      }
+
+      if(state.mode==='dropping'){
+        crane.rope = clamp(crane.rope+5, 60, crane.maxDrop);
+        const clawY=82+crane.rope;
+        // Check collision with any toy within grip range
+        let hitIndex=-1;
+        for(let i=0;i<toys.length;i++){
+          const t=toys[i]; if(t.won) continue;
+          const d=Math.hypot(t.x-crane.x, t.y-clawY);
+          if(d < t.r + crane.arm){ hitIndex=i; break; }
+        }
+        if(clawY>=crane.maxDrop || hitIndex!==-1){
+          grabbed = hitIndex!==-1 ? hitIndex : null;
+          state.mode='lifting'; state.msg= grabbed!==null ? 'Dapat!' : 'Zonk, coba lagi';
+          updateHUD();
+        }
+      }
+
+      if(state.mode==='lifting'){
+        // Lift up
+        crane.rope = clamp(crane.rope-6, 60, crane.maxDrop);
+        // Move grabbed toy with claw
+        if(grabbed!==null){
+          const t=toys[grabbed];
+          t.x = lerp(t.x, crane.x, 0.5);
+          t.y = lerp(t.y, 82+crane.rope+20, 0.5);
+          // If near top, count as win
+          if(crane.rope<=62){
+            t.won=true; grabbed=null; state.score+=1; state.tries-=1; state.mode='resetting';
+            state.msg='Mantap! +1'; setToast('🎉 MENANG!'); updateHUD();
+          }
+        }else{
+          if(crane.rope<=62){
+            state.tries-=1; state.mode='resetting'; setToast('💤 Belum dapat...'); updateHUD();
+          }
+        }
+      }
+
+      if(state.mode==='resetting'){
+        // slight pause then back to idle
+        update._delay = (update._delay||0)+1;
+        if(update._delay>24){
+          update._delay=0; state.mode='idle'; state.msg= state.tries>0 ? 'Siap!' : 'Habis percobaan'; updateHUD();
+        }
+      }
+
+      if(state.tries<=0 && state.running){
+        state.running=false;
+        setToast('Permainan selesai. Tekan Reset untuk main lagi.');
+      }
+    }
+
+    function render(){
+      ctx.clearRect(0,0,W,H);
+      drawBackground();
+      drawToys();
+      drawCrane();
+    }
+
+    function loop(){
+      if(state.running){ update(); }
+      render();
+      requestAnimationFrame(loop);
+    }
+    updateHUD();
+    loop();
+  </script>
+</body>
+</html>
